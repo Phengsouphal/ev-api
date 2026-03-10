@@ -34,10 +34,47 @@ def health():
 @cross_origin()
 def get_stations():
     try:
+        # ── Pagination params ─────────────────────────────────
+        page = int(request.args.get("page", 1))
+        limit = int(request.args.get("limit", 1000))
+        offset = (page - 1) * limit
+
         with engine.connect() as conn:
-            result = conn.execute(text("SELECT * FROM ev_stations"))
+            # Total count
+            count_result = conn.execute(text("SELECT COUNT(*) FROM ev_stations"))
+            total = count_result.scalar()
+
+            # Paginated rows
+            result = conn.execute(
+                text(
+                    """
+                SELECT *
+                FROM   ev_stations
+                LIMIT  :limit
+                OFFSET :offset
+            """
+                ),
+                {"limit": limit, "offset": offset},
+            )
+
             rows = [dict(row._mapping) for row in result]
-        return jsonify({"data": rows, "total": len(rows)})
+
+        return jsonify(
+            {
+                "data": rows,
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "total": total,
+                    "total_pages": -(-total // limit),  # ceiling division
+                    "has_next": page < -(-total // limit),
+                    "has_prev": page > 1,
+                },
+            }
+        )
+
+    except ValueError:
+        return jsonify({"error": "page and limit must be numbers"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -151,8 +188,8 @@ def get_stations():
 #     return jsonify(result)
 
 
-# if __name__ == "__main__":
-#     app.run(debug=True)
+if __name__ == "__main__":
+    app.run(debug=True)
 
 # required export
 # handler = app
