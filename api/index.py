@@ -8,7 +8,9 @@ load_dotenv()
 
 
 def get_conn():
-    return psycopg2.connect(os.getenv("DATABASE_URL"))
+    return psycopg2.connect(
+        "postgresql://neondb_owner:npg_IaQmGEsB8hw6@ep-broad-meadow-aj2wxm2f-pooler.c-3.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require?sslmode=require"
+    )
 
 
 app = Flask(__name__)
