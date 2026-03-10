@@ -12,11 +12,7 @@ app = Flask(__name__)
 # ── Neon DB ───────────────────────────────────────────────────
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-engine = (
-    create_engine(DATABASE_URL, pool_pre_ping=True, connect_args={"sslmode": "require"})
-    if DATABASE_URL
-    else None
-)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 
 
 @app.route("/")
