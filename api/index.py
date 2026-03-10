@@ -1,6 +1,15 @@
 from flask import Flask, request, jsonify
-from db import get_conn
+import psycopg2
+import os
 from flask_cors import cross_origin
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
+def get_conn():
+    return psycopg2.connect(os.getenv("DATABASE_URL"))
+
 
 app = Flask(__name__)
 
