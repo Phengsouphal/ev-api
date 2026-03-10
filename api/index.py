@@ -30,6 +30,18 @@ def health():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/stations", methods=["GET"])
+@cross_origin()
+def get_stations():
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT * FROM ev_stations"))
+            rows = [dict(row._mapping) for row in result]
+        return jsonify({"data": rows, "total": len(rows)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # Create table
 # @app.route("/init-db")
 # def init_db():
