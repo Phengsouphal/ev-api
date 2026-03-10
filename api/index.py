@@ -15,8 +15,8 @@ app = Flask(__name__)
 
 
 @app.route("/")
-def home():
-    return jsonify({"message": "Flask running on Vercel"})
+def index():
+    return jsonify({"status": "ok"})
 
 
 # Create table
@@ -132,4 +132,4 @@ def get_stations():
 #     app.run(debug=True)
 
 # required export
-handler = app
+# handler = app
