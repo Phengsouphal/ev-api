@@ -1,19 +1,22 @@
 from flask import Flask, request, jsonify
-import psycopg2
 import os
 from flask_cors import cross_origin
 from dotenv import load_dotenv
+from sqlalchemy import create_engine, text
+
 
 load_dotenv()
 
-
-def get_conn():
-    return psycopg2.connect(
-        "postgresql://neondb_owner:npg_IaQmGEsB8hw6@ep-broad-meadow-aj2wxm2f-pooler.c-3.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require?sslmode=require"
-    )
-
-
 app = Flask(__name__)
+
+# ── Neon DB ───────────────────────────────────────────────────
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+engine = (
+    create_engine(DATABASE_URL, pool_pre_ping=True, connect_args={"sslmode": "require"})
+    if DATABASE_URL
+    else None
+)
 
 
 @app.route("/")
@@ -21,113 +24,123 @@ def index():
     return jsonify({"status": "ok"})
 
 
+@app.route("/api/health")
+def health():
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return jsonify({"db": "connected"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # Create table
-@app.route("/init-db")
-def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
+# @app.route("/init-db")
+# def init_db():
+#     conn = get_conn()
+#     cur = conn.cursor()
 
-    cur.execute(
-        """
-    CREATE TABLE IF NOT EXISTS ev_stations (
-        id SERIAL PRIMARY KEY,
-        location_name TEXT,
-        lat DOUBLE PRECISION,
-        lng DOUBLE PRECISION,
-        city TEXT,
-        battery TEXT,
-        charge_type TEXT,
-        app TEXT,
-        open TEXT,
-        payment TEXT,
-        map_link TEXT
-    );
-    """
-    )
+#     cur.execute(
+#         """
+#     CREATE TABLE IF NOT EXISTS ev_stations (
+#         id SERIAL PRIMARY KEY,
+#         location_name TEXT,
+#         lat DOUBLE PRECISION,
+#         lng DOUBLE PRECISION,
+#         city TEXT,
+#         battery TEXT,
+#         charge_type TEXT,
+#         app TEXT,
+#         open TEXT,
+#         payment TEXT,
+#         map_link TEXT
+#     );
+#     """
+#     )
 
-    cur.execute(
-        """
-    CREATE UNIQUE INDEX unique_station_location
-ON ev_stations (lat, lng)
-WHERE lat IS NOT NULL AND lng IS NOT NULL;
-    """
-    )
+#     cur.execute(
+#         """
+#     CREATE UNIQUE INDEX unique_station_location
+# ON ev_stations (lat, lng)
+# WHERE lat IS NOT NULL AND lng IS NOT NULL;
+#     """
+#     )
 
-    conn.commit()
-    cur.close()
-    conn.close()
+#     conn.commit()
+#     cur.close()
+#     conn.close()
 
-    return {"status": "db initialized"}
-
-
-@app.route("/stations", methods=["POST"])
-def create_station():
-    data = request.json
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-    INSERT INTO ev_stations (location_name, lat, lng, city, battery, charge_type, app, open, payment, map_link)
-    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-    ON CONFLICT (lat, lng) DO NOTHING
-    """,
-        (
-            data.get("location_name"),
-            (data.get("lat")),
-            (data.get("lng")),
-            data.get("city"),
-            data.get("battery"),
-            data.get("charge_type"),
-            data.get("app"),
-            data.get("open"),
-            data.get("payment"),
-            data.get("map_link"),
-        ),
-    )
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return {"status": "inserted"}
+#     return {"status": "db initialized"}
 
 
-@app.route("/stations")
-@cross_origin()
-def get_stations():
-    conn = get_conn()
-    cur = conn.cursor()
+# @app.route("/stations", methods=["POST"])
+# def create_station():
+#     data = request.json
 
-    cur.execute(
-        "SELECT id,location_name,lat,lng,city,battery,charge_type,app,open,payment,map_link FROM ev_stations"
-    )
+#     conn = get_conn()
+#     cur = conn.cursor()
 
-    rows = cur.fetchall()
+#     cur.execute(
+#         """
+#     INSERT INTO ev_stations (location_name, lat, lng, city, battery, charge_type, app, open, payment, map_link)
+#     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+#     ON CONFLICT (lat, lng) DO NOTHING
+#     """,
+#         (
+#             data.get("location_name"),
+#             (data.get("lat")),
+#             (data.get("lng")),
+#             data.get("city"),
+#             data.get("battery"),
+#             data.get("charge_type"),
+#             data.get("app"),
+#             data.get("open"),
+#             data.get("payment"),
+#             data.get("map_link"),
+#         ),
+#     )
 
-    result = []
-    for r in rows:
-        result.append(
-            {
-                "id": r[0],
-                "location_name": r[1],
-                "lat": r[2],
-                "lng": r[3],
-                "city": r[4],
-                "battery": r[5],
-                "charge_type": r[6],
-                "app": r[7],
-                "open": r[8],
-                "payment": r[9],
-                "map_link": r[10],
-            }
-        )
+#     conn.commit()
+#     cur.close()
+#     conn.close()
 
-    cur.close()
-    conn.close()
+#     return {"status": "inserted"}
 
-    return jsonify(result)
+
+# @app.route("/stations")
+# @cross_origin()
+# def get_stations():
+#     conn = get_conn()
+#     cur = conn.cursor()
+
+#     cur.execute(
+#         "SELECT id,location_name,lat,lng,city,battery,charge_type,app,open,payment,map_link FROM ev_stations"
+#     )
+
+#     rows = cur.fetchall()
+
+#     result = []
+#     for r in rows:
+#         result.append(
+#             {
+#                 "id": r[0],
+#                 "location_name": r[1],
+#                 "lat": r[2],
+#                 "lng": r[3],
+#                 "city": r[4],
+#                 "battery": r[5],
+#                 "charge_type": r[6],
+#                 "app": r[7],
+#                 "open": r[8],
+#                 "payment": r[9],
+#                 "map_link": r[10],
+#             }
+#         )
+
+#     cur.close()
+#     conn.close()
+
+#     return jsonify(result)
 
 
 # if __name__ == "__main__":
