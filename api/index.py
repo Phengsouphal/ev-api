@@ -1,3 +1,5 @@
+from pydoc import text
+
 from flask import Flask, request, jsonify
 import psycopg2
 import os
@@ -8,7 +10,10 @@ load_dotenv()
 
 
 def get_conn():
-    return psycopg2.connect(os.getenv("DATABASE_URL"))
+    try:
+        return psycopg2.connect(os.getenv("DATABASE_URL"))
+    except Exception as e:
+        return jsonify({"error connection": str(e)}), 500
 
 
 app = Flask(__name__)
@@ -92,7 +97,7 @@ def create_station():
     return {"status": "inserted"}
 
 
-@app.route("/stations")
+@app.route("api/stations", methods=["GET"])
 @cross_origin()
 def get_stations():
     conn = get_conn()
