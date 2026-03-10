@@ -5,6 +5,11 @@ from flask_cors import cross_origin
 app = Flask(__name__)
 
 
+@app.route("/")
+def home():
+    return jsonify({"message": "Flask running on Vercel"})
+
+
 # Create table
 @app.route("/init-db")
 def init_db():
@@ -116,3 +121,6 @@ def get_stations():
 
 if __name__ == "__main__":
     app.run(debug=True)
+
+# required export
+handler = app
