@@ -1,18 +1,29 @@
 from flask import Flask, request, jsonify
-import os
 from flask_cors import cross_origin
+from sqlalchemy import create_engine, text, pool
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
-
+import os
 
 load_dotenv()
 
 app = Flask(__name__)
 
-# ── Neon DB ───────────────────────────────────────────────────
+# ── Connection Pool ───────────────────────────────────────────
+# QueuePool is SQLAlchemy's default — thread-safe, auto-recycles
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+engine = create_engine(
+    DATABASE_URL,
+    poolclass=pool.QueuePool,
+    pool_size=5,  # max persistent connections
+    max_overflow=5,  # extra connections when pool is full (total max: 10)
+    pool_timeout=30,  # seconds to wait for a connection before error
+    pool_recycle=1800,  # recycle connections every 30min (prevents stale conn)
+    pool_pre_ping=True,  # test connection before using (auto-reconnect)
+)
+
+
+# ── Routes ────────────────────────────────────────────────────
 
 
 @app.route("/")
@@ -25,7 +36,13 @@ def health():
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        return jsonify({"db": "connected"})
+        pool_status = engine.pool.status()
+        return jsonify(
+            {
+                "db": "connected",
+                "pool": pool_status,  # shows checked-in/out connection counts
+            }
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -34,30 +51,54 @@ def health():
 @cross_origin()
 def get_stations():
     try:
-        # ── Pagination params ─────────────────────────────────
         page = int(request.args.get("page", 1))
         limit = int(request.args.get("limit", 1000))
         offset = (page - 1) * limit
 
-        with engine.connect() as conn:
-            # Total count
-            count_result = conn.execute(text("SELECT COUNT(*) FROM ev_stations"))
-            total = count_result.scalar()
+        # ── Search params ─────────────────────────────────────
+        search = request.args.get("search", "").strip()  # searches both fields
+        city = request.args.get("city", "").strip()  # filter by city only
 
-            # Paginated rows
+        # ── Build WHERE clause ────────────────────────────────
+        filters = []
+        params = {"limit": limit, "offset": offset}
+
+        if search:
+            filters.append(
+                """
+                (location_name ILIKE :search OR city ILIKE :search)
+            """
+            )
+            params["search"] = f"%{search}%"
+
+        if city:
+            filters.append("city ILIKE :city")
+            params["city"] = f"%{city}%"
+
+        where = "WHERE " + " AND ".join(filters) if filters else ""
+
+        with engine.connect() as conn:
+            total = conn.execute(
+                text(f"SELECT COUNT(*) FROM ev_stations {where}"),
+                params,
+            ).scalar()
+
             result = conn.execute(
                 text(
-                    """
-                SELECT *
-                FROM   ev_stations
-                LIMIT  :limit
-                OFFSET :offset
-            """
+                    f"""
+                    SELECT *
+                    FROM   ev_stations
+                    {where}
+                    ORDER  BY id ASC
+                    LIMIT  :limit
+                    OFFSET :offset
+                """
                 ),
-                {"limit": limit, "offset": offset},
+                params,
             )
-
             rows = [dict(row._mapping) for row in result]
+
+        total_pages = -(-total // limit)
 
         return jsonify(
             {
@@ -66,8 +107,8 @@ def get_stations():
                     "page": page,
                     "limit": limit,
                     "total": total,
-                    "total_pages": -(-total // limit),  # ceiling division
-                    "has_next": page < -(-total // limit),
+                    "total_pages": total_pages,
+                    "has_next": page < total_pages,
                     "has_prev": page > 1,
                 },
             }
@@ -79,117 +120,97 @@ def get_stations():
         return jsonify({"error": str(e)}), 500
 
 
-# Create table
-# @app.route("/init-db")
-# def init_db():
-#     conn = get_conn()
-#     cur = conn.cursor()
+@app.route("/api/stations/<int:station_id>", methods=["GET"])
+@cross_origin()
+def get_station(station_id):
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT * FROM ev_stations WHERE id = :id"),
+                {"id": station_id},
+            )
+            row = result.fetchone()
 
-#     cur.execute(
-#         """
-#     CREATE TABLE IF NOT EXISTS ev_stations (
-#         id SERIAL PRIMARY KEY,
-#         location_name TEXT,
-#         lat DOUBLE PRECISION,
-#         lng DOUBLE PRECISION,
-#         city TEXT,
-#         battery TEXT,
-#         charge_type TEXT,
-#         app TEXT,
-#         open TEXT,
-#         payment TEXT,
-#         map_link TEXT
-#     );
-#     """
-#     )
+        if not row:
+            return jsonify({"error": "Station not found"}), 404
 
-#     cur.execute(
-#         """
-#     CREATE UNIQUE INDEX unique_station_location
-# ON ev_stations (lat, lng)
-# WHERE lat IS NOT NULL AND lng IS NOT NULL;
-#     """
-#     )
-
-#     conn.commit()
-#     cur.close()
-#     conn.close()
-
-#     return {"status": "db initialized"}
+        return jsonify({"data": dict(row._mapping)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
-# @app.route("/stations", methods=["POST"])
-# def create_station():
-#     data = request.json
+@app.route("/api/stations", methods=["POST"])
+@cross_origin()
+def create_station():
+    body = request.get_json()
+    required = ["location_name", "lat", "lng"]
+    for field in required:
+        if not body.get(field):
+            return jsonify({"error": f"{field} is required"}), 400
 
-#     conn = get_conn()
-#     cur = conn.cursor()
+    try:
+        with engine.begin() as conn:  # begin() auto-commits on exit
+            result = conn.execute(
+                text(
+                    """
+                    INSERT INTO ev_stations
+                        (location_name, lat, lng, city, battery, charge_type, app, open, payment, map_link)
+                    VALUES
+                        (:location_name, :lat, :lng, :city, :battery, :charge_type, :app, :open, :payment, :map_link)
+                    ON CONFLICT ON CONSTRAINT unique_station_location
+                    DO UPDATE SET
+                        location_name = EXCLUDED.location_name,
+                        city          = EXCLUDED.city,
+                        battery       = EXCLUDED.battery,
+                        charge_type   = EXCLUDED.charge_type,
+                        app           = EXCLUDED.app,
+                        open          = EXCLUDED.open,
+                        payment       = EXCLUDED.payment,
+                        map_link      = EXCLUDED.map_link
+                    RETURNING *
+                """
+                ),
+                {
+                    "location_name": body["location_name"],
+                    "lat": float(body["lat"]),
+                    "lng": float(body["lng"]),
+                    "city": body.get("city"),
+                    "battery": body.get("battery"),
+                    "charge_type": body.get("charge_type"),
+                    "app": body.get("app"),
+                    "open": body.get("open"),
+                    "payment": body.get("payment"),
+                    "map_link": body.get("map_link"),
+                },
+            )
+            row = result.fetchone()
 
-#     cur.execute(
-#         """
-#     INSERT INTO ev_stations (location_name, lat, lng, city, battery, charge_type, app, open, payment, map_link)
-#     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-#     ON CONFLICT (lat, lng) DO NOTHING
-#     """,
-#         (
-#             data.get("location_name"),
-#             (data.get("lat")),
-#             (data.get("lng")),
-#             data.get("city"),
-#             data.get("battery"),
-#             data.get("charge_type"),
-#             data.get("app"),
-#             data.get("open"),
-#             data.get("payment"),
-#             data.get("map_link"),
-#         ),
-#     )
-
-#     conn.commit()
-#     cur.close()
-#     conn.close()
-
-#     return {"status": "inserted"}
+        return jsonify({"data": dict(row._mapping)}), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
-# @app.route("/stations")
-# @cross_origin()
-# def get_stations():
-#     conn = get_conn()
-#     cur = conn.cursor()
+@app.route("/api/stations/<int:station_id>", methods=["DELETE"])
+@cross_origin()
+def delete_station(station_id):
+    try:
+        with engine.begin() as conn:
+            result = conn.execute(
+                text("DELETE FROM ev_stations WHERE id = :id RETURNING id"),
+                {"id": station_id},
+            )
+            if not result.fetchone():
+                return jsonify({"error": "Station not found"}), 404
 
-#     cur.execute(
-#         "SELECT id,location_name,lat,lng,city,battery,charge_type,app,open,payment,map_link FROM ev_stations"
-#     )
+        return jsonify({"message": f"Station {station_id} deleted"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
-#     rows = cur.fetchall()
 
-#     result = []
-#     for r in rows:
-#         result.append(
-#             {
-#                 "id": r[0],
-#                 "location_name": r[1],
-#                 "lat": r[2],
-#                 "lng": r[3],
-#                 "city": r[4],
-#                 "battery": r[5],
-#                 "charge_type": r[6],
-#                 "app": r[7],
-#                 "open": r[8],
-#                 "payment": r[9],
-#                 "map_link": r[10],
-#             }
-#         )
-
-#     cur.close()
-#     conn.close()
-
-#     return jsonify(result)
+# ── WSGI entry for Vercel ─────────────────────────────────────
+def handler(environ, start_response):
+    return app.wsgi_app(environ, start_response)
 
 
 if __name__ == "__main__":
     app.run(debug=True)
-
-# required export
-# handler = app
