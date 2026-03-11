@@ -1,5 +1,6 @@
 flask
 psycopg2-binary
+werkzeug
 requests
 flask-cors
 python-dotenv
