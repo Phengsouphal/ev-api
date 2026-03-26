@@ -257,6 +257,114 @@ def delete_station(station_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/no-lat-lng-stations", methods=["GET"])
+@cross_origin()
+def get_no_lat_lng_stations():
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+        limit = min(int(request.args.get("limit", 1000)), 5000)
+        offset = (page - 1) * limit
+
+        filters, params = [], {"limit": limit, "offset": offset}
+        filters.append(
+            "(lat IS NULL OR lat::text = '' OR lng IS NULL OR lng::text = '')"
+        )
+        where = ("WHERE " + " AND ".join(filters)) if filters else ""
+
+        with engine.connect() as conn:
+            total = conn.execute(
+                text(f"SELECT COUNT(*) FROM ev_stations {where}"), params
+            ).scalar()
+
+            rows = [
+                dict(row._mapping)
+                for row in conn.execute(
+                    text(
+                        f"SELECT * FROM ev_stations {where} ORDER BY id ASC LIMIT :limit OFFSET :offset"
+                    ),
+                    params,
+                )
+            ]
+
+        return jsonify(
+            {
+                "data": rows,
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "total": total,
+                    "total_pages": -(-total // limit),
+                    "has_next": page < -(-total // limit),
+                    "has_prev": page > 1,
+                },
+            }
+        )
+
+    except ValueError:
+        return jsonify({"error": "page and limit must be integers"}), 400
+    except Exception as e:
+        log.error("GET /api/stations error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/stations/<int:station_id>", methods=["PUT"])
+@cross_origin()
+def update_station(station_id):
+    body = request.get_json(silent=True) or {}
+    if not body:
+        return jsonify({"error": "Request body is empty"}), 400
+
+    # Only update fields that were actually sent in the request
+    UPDATABLE_FIELDS = [
+        "location_name",
+        "lat",
+        "lng",
+        "city",
+        "battery",
+        "charge_type",
+        "app",
+        "open",
+        "payment",
+        "map_link",
+    ]
+    updates = {f: body[f] for f in UPDATABLE_FIELDS if f in body}
+
+    if not updates:
+        return (
+            jsonify(
+                {
+                    "error": f"No valid fields to update. Allowed: {', '.join(UPDATABLE_FIELDS)}"
+                }
+            ),
+            400,
+        )
+
+    if "lat" in updates:
+        updates["lat"] = float(updates["lat"])
+    if "lng" in updates:
+        updates["lng"] = float(updates["lng"])
+
+    try:
+        set_clause = ", ".join(f"{col} = :{col}" for col in updates)
+        updates["station_id"] = station_id
+
+        with engine.begin() as conn:
+            row = conn.execute(
+                text(
+                    f"UPDATE ev_stations SET {set_clause} WHERE id = :station_id RETURNING *"
+                ),
+                updates,
+            ).fetchone()
+
+        if not row:
+            return jsonify({"error": "Station not found"}), 404
+
+        return jsonify({"data": dict(row._mapping)})
+    except Exception as e:
+        log.error("PUT /api/stations/%s error: %s", station_id, e)
+        return jsonify({"error": str(e)}), 500
+
+
 # ── Telegram Listener ─────────────────────────────────────────────────────────
 
 
